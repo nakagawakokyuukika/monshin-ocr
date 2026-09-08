@@ -93,9 +93,12 @@ def run_ocr(service, image_bytes: bytes) -> str:
     image_bytes = compress_image(image_bytes)
 
     # 1. 画像を「Google Doc」として保存 = OCR発動
+    # ※ parents を指定することでサービスアカウント個人DriveではなくShared Folderに
+    #    一時ファイルを置く → 個人Driveのストレージ超過エラー(storageQuotaExceeded)を回避
     file_metadata = {
         "name": "_ocr_temp_monshin",
         "mimeType": "application/vnd.google-apps.document",
+        "parents": [st.secrets["DRIVE_FOLDER_ID"]],
     }
     media = MediaIoBaseUpload(
         io.BytesIO(image_bytes),
