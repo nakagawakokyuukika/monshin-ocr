@@ -92,9 +92,23 @@ def run_ocr(service, image_bytes: bytes) -> str:
     # アップロード前に圧縮（Broken pipe 対策）
     image_bytes = compress_image(image_bytes)
 
+    # 0. 前回エラーで残った一時ファイルを先に削除（ストレージ枯渇対策）
+    try:
+        leftovers = service.files().list(
+            q="name='_ocr_temp_monshin' and trashed=false",
+            fields="files(id)",
+            spaces="drive",
+        ).execute()
+        for lf in leftovers.get("files", []):
+            try:
+                service.files().delete(fileId=lf["id"]).execute()
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     # 1. 画像を「Google Doc」として保存 = OCR発動
-    # ※ parents を指定することでサービスアカウント個人DriveではなくShared Folderに
-    #    一時ファイルを置く → 個人Driveのストレージ超過エラー(storageQuotaExceeded)を回避
+    # parents を指定 → サービスアカウント個人DriveではなくShared Folderに保存
     file_metadata = {
         "name": "_ocr_temp_monshin",
         "mimeType": "application/vnd.google-apps.document",
