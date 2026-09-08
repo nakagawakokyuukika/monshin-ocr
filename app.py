@@ -64,11 +64,34 @@ def get_drive_service():
 # ─────────────────────────────────────────
 # OCR処理
 # ─────────────────────────────────────────
+def compress_image(image_bytes: bytes, max_width: int = 1600) -> bytes:
+    """
+    画像をリサイズ・圧縮してアップロードを高速化する。
+    長辺が max_width を超える場合のみリサイズ。
+    """
+    img = Image.open(io.BytesIO(image_bytes))
+    # RGBA → RGB 変換（PNGなどで必要）
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    # リサイズ
+    w, h = img.size
+    if w > max_width or h > max_width:
+        ratio = max_width / max(w, h)
+        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=80, optimize=True)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 def run_ocr(service, image_bytes: bytes) -> str:
     """
     画像をGoogle DriveにアップロードしてOCRテキストを取得する。
     Google Driveは画像→Google Doc変換時に自動OCRを行う（無料）。
     """
+    # アップロード前に圧縮（Broken pipe 対策）
+    image_bytes = compress_image(image_bytes)
+
     # 1. 画像を「Google Doc」として保存 = OCR発動
     file_metadata = {
         "name": "_ocr_temp_monshin",
@@ -77,19 +100,24 @@ def run_ocr(service, image_bytes: bytes) -> str:
     media = MediaIoBaseUpload(
         io.BytesIO(image_bytes),
         mimetype="image/jpeg",
-        resumable=False,
+        resumable=True,   # 大きいファイルでも安定するよう resumable に変更
+        chunksize=1024 * 256,
     )
 
-    doc_file = service.files().create(
+    request = service.files().create(
         body=file_metadata,
         media_body=media,
         fields="id",
-    ).execute()
+    )
+    # resumable アップロードの実行
+    doc_file = None
+    while doc_file is None:
+        _, doc_file = request.next_chunk()
     doc_id = doc_file["id"]
 
     try:
         # OCR処理完了を待機
-        time.sleep(3)
+        time.sleep(4)
 
         # 2. プレーンテキストとしてエクスポート
         request = service.files().export_media(
