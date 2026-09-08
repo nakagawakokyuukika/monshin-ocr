@@ -4,18 +4,18 @@
 スマホで撮影した手書き問診票をOCRしてWordファイルを作成し、
 Google Driveの日付フォルダに保存するStreamlitアプリ。
 
-OCRエンジン：Google Drive 組み込みOCR（完全無料）
+OCRエンジン：Google Cloud Vision API（月1,000回無料）
 """
 
 import streamlit as st
 import json
 import io
-import time
+import base64
 from datetime import datetime
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
+from googleapiclient.http import MediaIoBaseUpload
 
 from docx import Document
 from docx.shared import Pt, Cm
@@ -62,7 +62,7 @@ def get_drive_service():
 
 
 # ─────────────────────────────────────────
-# OCR処理
+# OCR処理（Google Cloud Vision API）
 # ─────────────────────────────────────────
 def compress_image(image_bytes: bytes, max_width: int = 1600) -> bytes:
     """
@@ -70,10 +70,8 @@ def compress_image(image_bytes: bytes, max_width: int = 1600) -> bytes:
     長辺が max_width を超える場合のみリサイズ。
     """
     img = Image.open(io.BytesIO(image_bytes))
-    # RGBA → RGB 変換（PNGなどで必要）
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
-    # リサイズ
     w, h = img.size
     if w > max_width or h > max_width:
         ratio = max_width / max(w, h)
@@ -84,78 +82,38 @@ def compress_image(image_bytes: bytes, max_width: int = 1600) -> bytes:
     return buf.getvalue()
 
 
-def run_ocr(service, image_bytes: bytes) -> str:
+def run_ocr(image_bytes: bytes) -> str:
     """
-    画像をGoogle DriveにアップロードしてOCRテキストを取得する。
-    Google Driveは画像→Google Doc変換時に自動OCRを行う（無料）。
+    Google Cloud Vision APIで画像をOCRする。
+    Drive保存不要のため storageQuotaExceeded エラーが発生しない。
     """
-    # アップロード前に圧縮（Broken pipe 対策）
     image_bytes = compress_image(image_bytes)
 
-    # 0. 前回エラーで残った一時ファイルを先に削除（ストレージ枯渇対策）
-    try:
-        leftovers = service.files().list(
-            q="name='_ocr_temp_monshin' and trashed=false",
-            fields="files(id)",
-            spaces="drive",
-        ).execute()
-        for lf in leftovers.get("files", []):
-            try:
-                service.files().delete(fileId=lf["id"]).execute()
-            except Exception:
-                pass
-    except Exception:
-        pass
+    credentials_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT"])
+    creds = service_account.Credentials.from_service_account_info(
+        credentials_info,
+        scopes=["https://www.googleapis.com/auth/cloud-platform"],
+    )
+    vision_service = build("vision", "v1", credentials=creds, cache_discovery=False)
 
-    # 1. 画像を「Google Doc」として保存 = OCR発動
-    # parents を指定 → サービスアカウント個人DriveではなくShared Folderに保存
-    file_metadata = {
-        "name": "_ocr_temp_monshin",
-        "mimeType": "application/vnd.google-apps.document",
-        "parents": [st.secrets["DRIVE_FOLDER_ID"]],
+    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+    body = {
+        "requests": [{
+            "image": {"content": image_b64},
+            "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
+            "imageContext": {"languageHints": ["ja"]}
+        }]
     }
-    media = MediaIoBaseUpload(
-        io.BytesIO(image_bytes),
-        mimetype="image/jpeg",
-        resumable=True,   # 大きいファイルでも安定するよう resumable に変更
-        chunksize=1024 * 256,
-    )
 
-    request = service.files().create(
-        body=file_metadata,
-        media_body=media,
-        fields="id",
-    )
-    # resumable アップロードの実行
-    doc_file = None
-    while doc_file is None:
-        _, doc_file = request.next_chunk()
-    doc_id = doc_file["id"]
+    response = vision_service.images().annotate(body=body).execute()
 
-    try:
-        # OCR処理完了を待機
-        time.sleep(4)
+    responses = response.get("responses", [{}])
+    if responses and "error" in responses[0]:
+        raise Exception(responses[0]["error"].get("message", "Vision APIエラー"))
 
-        # 2. プレーンテキストとしてエクスポート
-        request = service.files().export_media(
-            fileId=doc_id,
-            mimeType="text/plain",
-        )
-        buf = io.BytesIO()
-        downloader = MediaIoBaseDownload(buf, request)
-        done = False
-        while not done:
-            _, done = downloader.next_chunk()
-
-        ocr_text = buf.getvalue().decode("utf-8").strip()
-        return ocr_text if ocr_text else "（OCRでテキストを取得できませんでした）"
-
-    finally:
-        # 3. 一時ファイルを削除（Driveを汚さない）
-        try:
-            service.files().delete(fileId=doc_id).execute()
-        except Exception:
-            pass
+    text = responses[0].get("fullTextAnnotation", {}).get("text", "")
+    return text.strip() if text else "（OCRでテキストを取得できませんでした）"
 
 
 # ─────────────────────────────────────────
@@ -241,7 +199,6 @@ def build_word_doc(ocr_text: str, patient_no: str, image_bytes: bytes) -> bytes:
     h2c = doc.add_heading("【 問診票 原本画像 】", level=2)
     h2c.runs[0].font.size = Pt(12)
 
-    # 画像サイズを適切にリサイズ
     img = Image.open(io.BytesIO(image_bytes))
     img_buf = io.BytesIO()
     img.save(img_buf, format="JPEG", quality=85)
@@ -279,7 +236,6 @@ def save_to_drive(service, doc_bytes: bytes, filename: str) -> str:
     if results["files"]:
         date_folder_id = results["files"][0]["id"]
     else:
-        # なければ作成
         folder_meta = {
             "name": today,
             "mimeType": "application/vnd.google-apps.folder",
@@ -334,7 +290,6 @@ def main():
     )
 
     if uploaded:
-        # プレビュー表示
         st.image(uploaded, caption="アップロードされた問診票", use_container_width=True)
 
         st.divider()
@@ -343,7 +298,6 @@ def main():
 
             image_bytes = uploaded.read()
 
-            # 進捗表示
             progress = st.progress(0)
             status   = st.empty()
 
@@ -353,9 +307,9 @@ def main():
                 service = get_drive_service()
                 progress.progress(10)
 
-                # Step 2: OCR
-                status.info("📖 テキスト読み取り中（10〜15秒かかります）...")
-                ocr_text = run_ocr(service, image_bytes)
+                # Step 2: OCR（Vision API）
+                status.info("📖 テキスト読み取り中（数秒かかります）...")
+                ocr_text = run_ocr(image_bytes)
                 progress.progress(55)
 
                 # Step 3: Word生成
