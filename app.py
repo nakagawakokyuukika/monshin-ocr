@@ -4,13 +4,13 @@
 スマホで撮影した手書き問診票をOCRしてWordファイルを作成し、
 Google Driveの日付フォルダに保存するStreamlitアプリ。
 
-OCRエンジン：Google Cloud Vision API（月1,000回無料）
+OCRエンジン：Tesseract（完全無料・課金不要）
 """
 
 import streamlit as st
 import json
 import io
-import base64
+import pytesseract
 from datetime import datetime
 
 from google.oauth2 import service_account
@@ -84,36 +84,17 @@ def compress_image(image_bytes: bytes, max_width: int = 1600) -> bytes:
 
 def run_ocr(image_bytes: bytes) -> str:
     """
-    Google Cloud Vision APIで画像をOCRする。
-    Drive保存不要のため storageQuotaExceeded エラーが発生しない。
+    Tesseract OCR（日本語対応）で画像をテキスト化する。
+    外部APIなし・課金なし・完全無料。
     """
     image_bytes = compress_image(image_bytes)
+    img = Image.open(io.BytesIO(image_bytes))
 
-    credentials_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT"])
-    creds = service_account.Credentials.from_service_account_info(
-        credentials_info,
-        scopes=["https://www.googleapis.com/auth/cloud-platform"],
-    )
-    vision_service = build("vision", "v1", credentials=creds, cache_discovery=False)
+    # 日本語 + 英数字の混在問題票に対応
+    custom_config = r"--oem 1 --psm 3"
+    text = pytesseract.image_to_string(img, lang="jpn", config=custom_config)
 
-    image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-    body = {
-        "requests": [{
-            "image": {"content": image_b64},
-            "features": [{"type": "DOCUMENT_TEXT_DETECTION"}],
-            "imageContext": {"languageHints": ["ja"]}
-        }]
-    }
-
-    response = vision_service.images().annotate(body=body).execute()
-
-    responses = response.get("responses", [{}])
-    if responses and "error" in responses[0]:
-        raise Exception(responses[0]["error"].get("message", "Vision APIエラー"))
-
-    text = responses[0].get("fullTextAnnotation", {}).get("text", "")
-    return text.strip() if text else "（OCRでテキストを取得できませんでした）"
+    return text.strip() if text.strip() else "（OCRでテキストを取得できませんでした）"
 
 
 # ─────────────────────────────────────────
