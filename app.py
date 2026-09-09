@@ -203,14 +203,16 @@ def build_word_doc(ocr_text: str, patient_no: str, image_bytes: bytes) -> bytes:
 
 @st.cache_resource(show_spinner=False, ttl=300)
 def get_drive_service():
-    """Google Drive サービスオブジェクトを返す。失敗時は例外を投げる。"""
-    from google.oauth2 import service_account
+    """Google Drive サービスオブジェクトを返す（OAuth 2.0 リフレッシュトークン使用）。"""
+    from google.oauth2.credentials import Credentials
     from googleapiclient.discovery import build
 
-    credentials_info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT"])
-    creds = service_account.Credentials.from_service_account_info(
-        credentials_info,
-        scopes=["https://www.googleapis.com/auth/drive"],
+    creds = Credentials(
+        token=None,
+        refresh_token=st.secrets["GOOGLE_REFRESH_TOKEN"],
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=st.secrets["GOOGLE_CLIENT_ID"],
+        client_secret=st.secrets["GOOGLE_CLIENT_SECRET"],
     )
     return build("drive", "v3", credentials=creds, cache_discovery=False)
 
@@ -331,17 +333,9 @@ if ocr_button and uploaded_file is not None:
     drive_enabled = (
         "GOOGLE_SERVICE_ACCOUNT" in st.secrets and "DRIVE_FOLDER_ID" in st.secrets
     )
-    if drive_enabled:
-        with st.spinner("Google Drive に保存中..."):
-            try:
-                service = get_drive_service()
-                link = save_to_drive(service, doc_bytes, filename)
-                if link:
-                    st.info(f"Google Drive に保存しました: [ファイルを開く]({link})")
-                else:
-                    st.info("Google Drive への保存が完了しました。")
-            except Exception:
-                st.warning(
-                    "Google Drive への保存に失敗しました。"
-                    "ダウンロードボタンからファイルを取得してください。"
-                )
+    drive_enabled = (
+        "GOOGLE_CLIENT_ID" in st.secrets
+        and "GOOGLE_CLIENT_SECRET" in st.secrets
+        and "GOOGLE_REFRESH_TOKEN" in st.secrets
+        and "DRIVE_FOLDER_ID" in st.secrets
+    )
