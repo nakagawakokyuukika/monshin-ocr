@@ -1,26 +1,26 @@
 """
 問診票 OCR アプリ
 外部 AI API は使用しない（院内情報管理ポリシー遵守）
+OCR エンジン: EasyOCR（ローカル実行）
 """
 import streamlit as st
 import json
 import io
 from datetime import datetime
 
-# --- Tesseract チェック ---
+# --- EasyOCR チェック ---
 try:
-    import pytesseract
-    from pytesseract import TesseractNotFoundError
-    _TESSERACT_OK = True
+    import easyocr as _easyocr_module
+    _EASYOCR_OK = True
 except ImportError:
-    _TESSERACT_OK = False
-    TesseractNotFoundError = Exception
+    _EASYOCR_OK = False
 
 # --- その他ライブラリ ---
 from docx import Document
 from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from PIL import Image
+import numpy as np
 
 # ページ設定
 st.set_page_config(
@@ -86,31 +86,33 @@ def compress_image(image_bytes: bytes, max_width: int = 1600) -> bytes:
     return buf.getvalue()
 
 
+@st.cache_resource(show_spinner=False)
+def get_ocr_reader():
+    """EasyOCR の Reader を初回のみロードしてキャッシュする。"""
+    import easyocr
+    return easyocr.Reader(['ja', 'en'], gpu=False)
+
+
 def run_ocr(image_bytes: bytes) -> str:
-    """Tesseract で OCR を実行する。"""
-    if not _TESSERACT_OK:
+    """EasyOCR で OCR を実行する（ローカル処理・外部送信なし）。"""
+    if not _EASYOCR_OK:
         st.error(
-            "pytesseract がインポートできません。\n\n"
-            "requirements.txt に `pytesseract>=0.3.10` が含まれているか確認してください。"
+            "easyocr がインポートできません。\n\n"
+            "requirements.txt に `easyocr>=1.7.1` が含まれているか確認してください。"
         )
         st.stop()
 
     # 圧縮（10MB 超も含め自動対応）
     image_bytes = compress_image(image_bytes)
     img = Image.open(io.BytesIO(image_bytes))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+    img_array = np.array(img)
 
     try:
-        custom_config = r"--oem 1 --psm 3"
-        text = pytesseract.image_to_string(img, lang="jpn", config=custom_config)
-    except TesseractNotFoundError:
-        st.error(
-            "Tesseract がインストールされていません。\n\n"
-            "Streamlit Cloud にデプロイしている場合は、リポジトリに `packages.txt` を追加し、\n"
-            "以下の内容を記述してください：\n\n"
-            "```\ntesseract-ocr\ntesseract-ocr-jpn\ntesseract-ocr-jpn-vert\n```\n\n"
-            "ローカル環境では `sudo apt install tesseract-ocr tesseract-ocr-jpn` を実行してください。"
-        )
-        st.stop()
+        reader = get_ocr_reader()
+        results = reader.readtext(img_array)
+        text = '\n'.join([r[1] for r in results if r[2] > 0.1])
     except Exception:
         st.error("OCR 処理中にエラーが発生しました。画像を確認してからやり直してください。")
         st.stop()
