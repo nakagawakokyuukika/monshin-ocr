@@ -10,8 +10,14 @@ OCRエンジン：Tesseract（完全無料・課金不要）
 import streamlit as st
 import json
 import io
-import pytesseract
 from datetime import datetime
+
+# pytesseract は起動時クラッシュを防ぐため安全にインポート
+try:
+    import pytesseract
+    _TESSERACT_OK = True
+except Exception:
+    _TESSERACT_OK = False
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -87,6 +93,12 @@ def run_ocr(image_bytes: bytes) -> str:
     Tesseract OCR（日本語対応）で画像をテキスト化する。
     外部APIなし・課金なし・完全無料。
     """
+    if not _TESSERACT_OK:
+        raise Exception(
+            "Tesseractがインストールされていません。\n"
+            "GitHubリポジトリに packages.txt が含まれているか確認してください。"
+        )
+
     image_bytes = compress_image(image_bytes)
     img = Image.open(io.BytesIO(image_bytes))
 
