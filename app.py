@@ -1,7 +1,7 @@
 """
 問診票 OCR アプリ
 外部 AI API は使用しない（院内情報管理ポリシー遵守）
-OCR エンジン: EasyOCR（ローカル実行）
+OCR エンジン: EasyOCR / PaddleOCR（ローカル実行）
 """
 import streamlit as st
 import json
@@ -15,12 +15,12 @@ try:
 except ImportError:
     _EASYOCR_OK = False
 
-# --- manga-ocr チェック ---
+# --- PaddleOCR チェック ---
 try:
-    from manga_ocr import MangaOcr as _MangaOcr
-    _MANGAOCR_OK = True
+    from paddleocr import PaddleOCR as _PaddleOCR
+    _PADDLEOCR_OK = True
 except ImportError:
-    _MANGAOCR_OK = False
+    _PADDLEOCR_OK = False
 
 # --- その他ライブラリ ---
 from docx import Document
@@ -101,10 +101,10 @@ def get_ocr_reader():
 
 
 @st.cache_resource(show_spinner=False)
-def get_manga_ocr_reader():
-    """manga-ocr の Reader を初回のみロードしてキャッシュする。"""
-    from manga_ocr import MangaOcr
-    return MangaOcr()
+def get_paddle_ocr_reader():
+    """PaddleOCR の Reader を初回のみロードしてキャッシュする。"""
+    from paddleocr import PaddleOCR
+    return PaddleOCR(use_angle_cls=True, lang='japan', use_gpu=False, show_log=False)
 
 
 def run_ocr(image_bytes: bytes) -> str:
@@ -137,22 +137,31 @@ def run_ocr(image_bytes: bytes) -> str:
     return result
 
 
-def run_ocr_manga(image_bytes: bytes) -> str:
-    """manga-ocr で OCR を実行する（ローカル処理・外部送信なし）。"""
-    if not _MANGAOCR_OK:
-        st.error("manga-ocr がインポートできません。requirements.txt を確認してください。")
+def run_ocr_paddle(image_bytes: bytes) -> str:
+    """PaddleOCR で OCR を実行する（ローカル処理・外部送信なし）。"""
+    if not _PADDLEOCR_OK:
+        st.error("paddleocr がインポートできません。requirements.txt を確認してください。")
         st.stop()
 
     image_bytes = compress_image(image_bytes)
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
+    img_array = np.array(img)
 
     try:
-        mocr = get_manga_ocr_reader()
-        text = mocr(img)
+        ocr = get_paddle_ocr_reader()
+        results = ocr.ocr(img_array, cls=True)
+        lines = []
+        if results and results[0]:
+            for line in results[0]:
+                text = line[1][0]
+                confidence = line[1][1]
+                if confidence > 0.1:
+                    lines.append(text)
+        text = '\n'.join(lines)
     except Exception as e:
-        st.error(f"manga-ocr 処理中にエラーが発生しました: {e}")
+        st.error(f"PaddleOCR 処理中にエラーが発生しました: {e}")
         st.stop()
 
     result = text.strip()
@@ -302,9 +311,9 @@ with st.sidebar:
     st.header("⚙️ 設定")
     ocr_engine = st.radio(
         "OCR エンジン",
-        ["EasyOCR", "manga-ocr"],
+        ["EasyOCR", "PaddleOCR"],
         index=0,
-        help="manga-ocr は日本語手書きに特化。初回起動時にモデルをダウンロードします（数分かかる場合あり）。",
+        help="PaddleOCR は日本語手書きに強く、精度が高い場合があります。初回起動時にモデルをダウンロードします（数分かかる場合あり）。",
     )
     st.caption("同じ写真で切り替えて精度を比較できます。")
 
@@ -350,8 +359,8 @@ if ocr_button and uploaded_file is not None:
 
     # OCR 実行
     with st.spinner(f"OCR 処理中です（{ocr_engine}）。しばらくお待ちください..."):
-        if ocr_engine == "manga-ocr":
-            ocr_text = run_ocr_manga(image_bytes)
+        if ocr_engine == "PaddleOCR":
+            ocr_text = run_ocr_paddle(image_bytes)
         else:
             ocr_text = run_ocr(image_bytes)
 
