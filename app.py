@@ -113,9 +113,11 @@ def run_ocr(image_bytes: bytes) -> str:
         reader = get_ocr_reader()
         results = reader.readtext(img_array)
         text = '\n'.join([r[1] for r in results if r[2] > 0.1])
-    except Exception:
-        st.error("OCR 処理中にエラーが発生しました。画像を確認してからやり直してください。")
-        st.stop()
+     except Exception as e:
+         st.warning(
+         f"Google Drive への保存に失敗しました。\n\nエラー詳細: {e}\n\n"
+         "ダウンロードボタンからファイルを取得してください。"
+                )
 
     result = text.strip()
     if not result:
