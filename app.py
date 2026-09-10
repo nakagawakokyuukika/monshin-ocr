@@ -15,6 +15,13 @@ try:
 except ImportError:
     _EASYOCR_OK = False
 
+# --- manga-ocr チェック ---
+try:
+    from manga_ocr import MangaOcr as _MangaOcr
+    _MANGAOCR_OK = True
+except ImportError:
+    _MANGAOCR_OK = False
+
 # --- その他ライブラリ ---
 from docx import Document
 from docx.shared import Pt, Cm
@@ -93,6 +100,13 @@ def get_ocr_reader():
     return easyocr.Reader(['ja', 'en'], gpu=False)
 
 
+@st.cache_resource(show_spinner=False)
+def get_manga_ocr_reader():
+    """manga-ocr の Reader を初回のみロードしてキャッシュする。"""
+    from manga_ocr import MangaOcr
+    return MangaOcr()
+
+
 def run_ocr(image_bytes: bytes) -> str:
     """EasyOCR で OCR を実行する（ローカル処理・外部送信なし）。"""
     if not _EASYOCR_OK:
@@ -115,6 +129,30 @@ def run_ocr(image_bytes: bytes) -> str:
         text = '\n'.join([r[1] for r in results if r[2] > 0.1])
     except Exception:
         st.error("OCR 処理中にエラーが発生しました。画像を確認してからやり直してください。")
+        st.stop()
+
+    result = text.strip()
+    if not result:
+        return "（OCRでテキストを取得できませんでした）"
+    return result
+
+
+def run_ocr_manga(image_bytes: bytes) -> str:
+    """manga-ocr で OCR を実行する（ローカル処理・外部送信なし）。"""
+    if not _MANGAOCR_OK:
+        st.error("manga-ocr がインポートできません。requirements.txt を確認してください。")
+        st.stop()
+
+    image_bytes = compress_image(image_bytes)
+    img = Image.open(io.BytesIO(image_bytes))
+    if img.mode in ("RGBA", "P"):
+        img = img.convert("RGB")
+
+    try:
+        mocr = get_manga_ocr_reader()
+        text = mocr(img)
+    except Exception as e:
+        st.error(f"manga-ocr 処理中にエラーが発生しました: {e}")
         st.stop()
 
     result = text.strip()
@@ -259,6 +297,17 @@ def save_to_drive(service, doc_bytes: bytes, filename: str) -> str:
 st.title("🏥 問診票 OCR")
 st.caption("手書き問診票の写真を Word ファイルに変換します")
 
+# サイドバー：エンジン選択
+with st.sidebar:
+    st.header("⚙️ 設定")
+    ocr_engine = st.radio(
+        "OCR エンジン",
+        ["EasyOCR", "manga-ocr"],
+        index=0,
+        help="manga-ocr は日本語手書きに特化。初回起動時にモデルをダウンロードします（数分かかる場合あり）。",
+    )
+    st.caption("同じ写真で切り替えて精度を比較できます。")
+
 # 患者番号入力
 patient_no = st.text_input(
     "患者番号（任意）",
@@ -300,8 +349,11 @@ if ocr_button and uploaded_file is not None:
         filename = f"問診票_{now_str}.docx"
 
     # OCR 実行
-    with st.spinner("OCR 処理中です。しばらくお待ちください..."):
-        ocr_text = run_ocr(image_bytes)
+    with st.spinner(f"OCR 処理中です（{ocr_engine}）。しばらくお待ちください..."):
+        if ocr_engine == "manga-ocr":
+            ocr_text = run_ocr_manga(image_bytes)
+        else:
+            ocr_text = run_ocr(image_bytes)
 
     # OCR 結果表示
     st.subheader("OCR 読み取り結果")
