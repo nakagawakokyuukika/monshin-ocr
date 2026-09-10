@@ -5,6 +5,7 @@ OCR エンジン: EasyOCR / Tesseract（ローカル実行）
 """
 import streamlit as st
 import io
+import re
 from datetime import datetime
 
 # --- EasyOCR チェック ---
@@ -68,6 +69,24 @@ input[type="text"] {
 
 # ===== ユーティリティ関数 =====
 
+def postprocess_ocr(text: str) -> str:
+    """OCR後テキストのチェックボックス補正。
+    口・目・日・ロ など矩形に見える文字をチェックボックス記号 ☐ に置換する。
+    行頭または空白の直後に現れる場合のみ置換し、単語中（入口・口腔など）は除外。
+    """
+    lines = text.splitlines()
+    result = []
+    for line in lines:
+        # 行頭 or 空白・全角スペース直後の口・目・日・ロ を ☐ に置換
+        line = re.sub(
+            r'(^|(?<=[ \t　]))([口目日ロ])(?=[ \t　]|[ぁ-んァ-ヶー一-龥a-zA-Z0-9（(①-⑩]|$)',
+            lambda m: m.group(1) + '☐',
+            line
+        )
+        result.append(line)
+    return '\n'.join(result)
+
+
 def compress_image(image_bytes: bytes, max_width: int = 1600) -> bytes:
     """画像を最大幅に合わせてリサイズし JPEG に変換する。"""
     img = Image.open(io.BytesIO(image_bytes))
@@ -110,7 +129,7 @@ def run_ocr(image_bytes: bytes) -> str:
         st.error("OCR 処理中にエラーが発生しました。画像を確認してからやり直してください。")
         st.stop()
 
-    result = text.strip()
+    result = postprocess_ocr(text.strip())
     if not result:
         return "（OCRでテキストを取得できませんでした）"
     return result
@@ -140,7 +159,7 @@ def run_ocr_tesseract(image_bytes: bytes) -> str:
         st.error(f"Tesseract 処理中にエラーが発生しました: {e}")
         st.stop()
 
-    result = text.strip()
+    result = postprocess_ocr(text.strip())
     if not result:
         return "（OCRでテキストを取得できませんでした）"
     return result
