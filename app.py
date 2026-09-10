@@ -1,10 +1,9 @@
 """
 問診票 OCR アプリ
 外部 AI API は使用しない（院内情報管理ポリシー遵守）
-OCR エンジン: EasyOCR / PaddleOCR（ローカル実行）
+OCR エンジン: EasyOCR / Tesseract（ローカル実行）
 """
 import streamlit as st
-import json
 import io
 from datetime import datetime
 
@@ -15,12 +14,12 @@ try:
 except ImportError:
     _EASYOCR_OK = False
 
-# --- PaddleOCR チェック ---
+# --- Tesseract チェック ---
 try:
-    from paddleocr import PaddleOCR as _PaddleOCR
-    _PADDLEOCR_OK = True
+    import pytesseract as _pytesseract
+    _TESSERACT_OK = True
 except ImportError:
-    _PADDLEOCR_OK = False
+    _TESSERACT_OK = False
 
 # --- その他ライブラリ ---
 from docx import Document
@@ -40,12 +39,9 @@ st.set_page_config(
 # --- スマホ向け CSS ---
 st.markdown("""
 <style>
-/* 全体フォントサイズ */
 html, body, [class*="css"] {
     font-size: 1.1rem !important;
 }
-
-/* ボタンを大きく */
 div.stButton > button,
 div.stDownloadButton > button {
     height: 3.5rem !important;
@@ -53,21 +49,15 @@ div.stDownloadButton > button {
     width: 100% !important;
     border-radius: 8px !important;
 }
-
-/* ファイルアップローダを大きく */
 section[data-testid="stFileUploadDropzone"] {
     padding: 2rem 1rem !important;
     font-size: 1.1rem !important;
 }
-
-/* 横スクロール防止 */
 .main .block-container {
     max-width: 100% !important;
     padding-left: 1rem !important;
     padding-right: 1rem !important;
 }
-
-/* テキスト入力 */
 input[type="text"] {
     font-size: 1.1rem !important;
     height: 3rem !important;
@@ -79,7 +69,7 @@ input[type="text"] {
 # ===== ユーティリティ関数 =====
 
 def compress_image(image_bytes: bytes, max_width: int = 1600) -> bytes:
-    """画像を最大幅に合わせてリサイズし JPEG に変換する。10MB 超でも処理可能。"""
+    """画像を最大幅に合わせてリサイズし JPEG に変換する。"""
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
@@ -100,23 +90,12 @@ def get_ocr_reader():
     return easyocr.Reader(['ja', 'en'], gpu=False)
 
 
-@st.cache_resource(show_spinner=False)
-def get_paddle_ocr_reader():
-    """PaddleOCR の Reader を初回のみロードしてキャッシュする。"""
-    from paddleocr import PaddleOCR
-    return PaddleOCR(use_angle_cls=True, lang='japan', use_gpu=False, show_log=False)
-
-
 def run_ocr(image_bytes: bytes) -> str:
     """EasyOCR で OCR を実行する（ローカル処理・外部送信なし）。"""
     if not _EASYOCR_OK:
-        st.error(
-            "easyocr がインポートできません。\n\n"
-            "requirements.txt に `easyocr>=1.7.1` が含まれているか確認してください。"
-        )
+        st.error("easyocr がインポートできません。requirements.txt を確認してください。")
         st.stop()
 
-    # 圧縮（10MB 超も含め自動対応）
     image_bytes = compress_image(image_bytes)
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode in ("RGBA", "P"):
@@ -137,31 +116,28 @@ def run_ocr(image_bytes: bytes) -> str:
     return result
 
 
-def run_ocr_paddle(image_bytes: bytes) -> str:
-    """PaddleOCR で OCR を実行する（ローカル処理・外部送信なし）。"""
-    if not _PADDLEOCR_OK:
-        st.error("paddleocr がインポートできません。requirements.txt を確認してください。")
+def run_ocr_tesseract(image_bytes: bytes) -> str:
+    """Tesseract で OCR を実行する（ローカル処理・外部送信なし）。"""
+    if not _TESSERACT_OK:
+        st.error("pytesseract がインポートできません。requirements.txt を確認してください。")
         st.stop()
+
+    import pytesseract
 
     image_bytes = compress_image(image_bytes)
     img = Image.open(io.BytesIO(image_bytes))
     if img.mode in ("RGBA", "P"):
         img = img.convert("RGB")
-    img_array = np.array(img)
 
     try:
-        ocr = get_paddle_ocr_reader()
-        results = ocr.ocr(img_array, cls=True)
-        lines = []
-        if results and results[0]:
-            for line in results[0]:
-                text = line[1][0]
-                confidence = line[1][1]
-                if confidence > 0.1:
-                    lines.append(text)
-        text = '\n'.join(lines)
+        # 日本語＋英語、手書き向け設定
+        text = pytesseract.image_to_string(
+            img,
+            lang='jpn',
+            config='--psm 6',
+        )
     except Exception as e:
-        st.error(f"PaddleOCR 処理中にエラーが発生しました: {e}")
+        st.error(f"Tesseract 処理中にエラーが発生しました: {e}")
         st.stop()
 
     result = text.strip()
@@ -181,11 +157,9 @@ def build_word_doc(ocr_text: str, patient_no: str, image_bytes: bytes) -> bytes:
 
     now = datetime.now()
 
-    # タイトル
     title = doc.add_heading("問　診　票（OCR）", level=1)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    # 基本情報テーブル
     tbl = doc.add_table(rows=1, cols=3)
     tbl.style = "Table Grid"
     cells = tbl.rows[0].cells
@@ -199,7 +173,6 @@ def build_word_doc(ocr_text: str, patient_no: str, image_bytes: bytes) -> bytes:
 
     doc.add_paragraph()
 
-    # OCR 読み取り結果
     h2 = doc.add_heading("【 OCR 読み取り結果 】", level=2)
     h2.runs[0].font.size = Pt(12)
 
@@ -221,7 +194,6 @@ def build_word_doc(ocr_text: str, patient_no: str, image_bytes: bytes) -> bytes:
 
     doc.add_paragraph()
 
-    # スタッフ確認欄
     h2b = doc.add_heading("【 スタッフ確認欄 】", level=2)
     h2b.runs[0].font.size = Pt(12)
     doc.add_paragraph("確認者：＿＿＿＿＿＿＿　　確認日時：＿＿＿＿＿＿＿")
@@ -231,7 +203,6 @@ def build_word_doc(ocr_text: str, patient_no: str, image_bytes: bytes) -> bytes:
 
     doc.add_paragraph()
 
-    # 原本画像
     h2c = doc.add_heading("【 問診票 原本画像 】", level=2)
     h2c.runs[0].font.size = Pt(12)
     img = Image.open(io.BytesIO(image_bytes))
@@ -271,7 +242,6 @@ def save_to_drive(service, doc_bytes: bytes, filename: str) -> str:
     parent_id = st.secrets["DRIVE_FOLDER_ID"]
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # 日付フォルダの検索または作成
     q = (
         f"name='{today}' and '{parent_id}' in parents "
         f"and mimeType='application/vnd.google-apps.folder' and trashed=false"
@@ -288,7 +258,6 @@ def save_to_drive(service, doc_bytes: bytes, filename: str) -> str:
         folder = service.files().create(body=folder_meta, fields="id").execute()
         date_folder_id = folder["id"]
 
-    # ファイルアップロード
     file_meta = {"name": filename, "parents": [date_folder_id]}
     media = MediaIoBaseUpload(
         io.BytesIO(doc_bytes),
@@ -311,9 +280,9 @@ with st.sidebar:
     st.header("⚙️ 設定")
     ocr_engine = st.radio(
         "OCR エンジン",
-        ["EasyOCR", "PaddleOCR"],
+        ["EasyOCR", "Tesseract"],
         index=0,
-        help="PaddleOCR は日本語手書きに強く、精度が高い場合があります。初回起動時にモデルをダウンロードします（数分かかる場合あり）。",
+        help="Tesseract は日本語ドキュメントOCRの定番エンジンです。EasyOCR と比較して試せます。",
     )
     st.caption("同じ写真で切り替えて精度を比較できます。")
 
@@ -337,7 +306,7 @@ if uploaded_file is not None:
 
 st.divider()
 
-# OCR 実行ボタン（写真が選択されていない場合は disabled）
+# OCR 実行ボタン
 ocr_button = st.button(
     "✅ OCR 処理を実行",
     disabled=(uploaded_file is None),
@@ -348,30 +317,25 @@ ocr_button = st.button(
 if ocr_button and uploaded_file is not None:
     image_bytes = uploaded_file.read()
 
-    # ファイル名生成
     now_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     if patient_no.strip():
-        # 患者番号に使えない文字を除去
         safe_no = "".join(c for c in patient_no.strip() if c not in r'\/:*?"<>|')
         filename = f"問診票_{safe_no}_{now_str}.docx"
     else:
         filename = f"問診票_{now_str}.docx"
 
-    # OCR 実行
     with st.spinner(f"OCR 処理中です（{ocr_engine}）。しばらくお待ちください..."):
-        if ocr_engine == "PaddleOCR":
-            ocr_text = run_ocr_paddle(image_bytes)
+        if ocr_engine == "Tesseract":
+            ocr_text = run_ocr_tesseract(image_bytes)
         else:
             ocr_text = run_ocr(image_bytes)
 
-    # OCR 結果表示
     st.subheader("OCR 読み取り結果")
     if ocr_text == "（OCRでテキストを取得できませんでした）":
         st.warning("OCRでテキストを取得できませんでした。画像が鮮明か確認してください。")
     else:
         st.text_area("テキスト（参考表示）", value=ocr_text, height=200)
 
-    # Word ファイル生成
     with st.spinner("Word ファイルを生成中..."):
         try:
             doc_bytes = build_word_doc(ocr_text, patient_no.strip(), image_bytes)
@@ -379,7 +343,6 @@ if ocr_button and uploaded_file is not None:
             st.error("Word ファイルの生成に失敗しました。画像を確認してからやり直してください。")
             st.stop()
 
-    # ダウンロードボタン（Drive 結果に関わらず必ず表示）
     st.success("処理が完了しました。")
     st.download_button(
         label="⬇️ Word ファイルをダウンロード",
@@ -390,7 +353,6 @@ if ocr_button and uploaded_file is not None:
         type="primary",
     )
 
-    # Google Drive 保存（任意・失敗してもクラッシュしない）
     drive_enabled = (
         "GOOGLE_CLIENT_ID" in st.secrets
         and "GOOGLE_CLIENT_SECRET" in st.secrets
