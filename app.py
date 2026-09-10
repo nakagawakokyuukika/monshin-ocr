@@ -113,11 +113,9 @@ def run_ocr(image_bytes: bytes) -> str:
         reader = get_ocr_reader()
         results = reader.readtext(img_array)
         text = '\n'.join([r[1] for r in results if r[2] > 0.1])
-     except Exception as e:
-         st.warning(
-         f"Google Drive への保存に失敗しました。\n\nエラー詳細: {e}\n\n"
-         "ダウンロードボタンからファイルを取得してください。"
-                )
+    except Exception:
+        st.error("OCR 処理中にエラーが発生しました。画像を確認してからやり直してください。")
+        st.stop()
 
     result = text.strip()
     if not result:
@@ -333,11 +331,22 @@ if ocr_button and uploaded_file is not None:
 
     # Google Drive 保存（任意・失敗してもクラッシュしない）
     drive_enabled = (
-        "GOOGLE_SERVICE_ACCOUNT" in st.secrets and "DRIVE_FOLDER_ID" in st.secrets
-    )
-    drive_enabled = (
         "GOOGLE_CLIENT_ID" in st.secrets
         and "GOOGLE_CLIENT_SECRET" in st.secrets
         and "GOOGLE_REFRESH_TOKEN" in st.secrets
         and "DRIVE_FOLDER_ID" in st.secrets
     )
+    if drive_enabled:
+        with st.spinner("Google Drive に保存中..."):
+            try:
+                service = get_drive_service()
+                link = save_to_drive(service, doc_bytes, filename)
+                if link:
+                    st.info(f"Google Drive に保存しました: [ファイルを開く]({link})")
+                else:
+                    st.info("Google Drive への保存が完了しました。")
+            except Exception as e:
+                st.warning(
+                    f"Google Drive への保存に失敗しました。\n\nエラー詳細: {e}\n\n"
+                    "ダウンロードボタンからファイルを取得してください。"
+                )
